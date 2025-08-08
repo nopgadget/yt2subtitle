@@ -119,7 +119,7 @@ def check_and_download_ffmpeg():
     print("Failed to download or extract ffmpeg")
     return False
 
-def clean_youtube_url(url):
+def clean_youtube_url(url, playlist=False):
     """Remove problematic query parameters from YouTube URL."""
     import urllib.parse
     
@@ -130,7 +130,12 @@ def clean_youtube_url(url):
     query_params = urllib.parse.parse_qs(parsed.query)
     
     # Remove problematic parameters
-    params_to_remove = ['list', 'start_radio', 'index', 'feature']
+    params_to_remove = ['start_radio', 'index', 'feature']
+    
+    # Only remove playlist-related parameters if not downloading a playlist
+    if not playlist:
+        params_to_remove.extend(['list'])
+    
     for param in params_to_remove:
         if param in query_params:
             del query_params[param]
@@ -150,10 +155,10 @@ def clean_youtube_url(url):
     
     return clean_url
 
-def convert_youtube_to_mp3(youtube_url):
+def convert_youtube_to_mp3(youtube_url, playlist=False):
     """Convert YouTube video to MP3 using yt-dlp and ffmpeg."""
     # Clean the URL first
-    clean_url = clean_youtube_url(youtube_url)
+    clean_url = clean_youtube_url(youtube_url, playlist=playlist)
     print(f"Cleaned URL: {clean_url}")
     
     ytdlp_path = Path("tools/yt-dlp.exe")
@@ -172,30 +177,32 @@ def convert_youtube_to_mp3(youtube_url):
     downloaded_dir.mkdir(exist_ok=True)
     print(f"Output directory: {downloaded_dir.absolute()}")
     
-    # First, get the video title to check if MP3 already exists
-    print("Checking if file already exists...")
-    try:
-        # Get video info to extract title
-        info_cmd = [
-            str(ytdlp_path),
-            "--get-title",
-            clean_url
-        ]
-        result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
-        video_title = result.stdout.strip()
-        
-        # Check if MP3 file already exists
-        mp3_filename = f"{video_title}.mp3"
-        mp3_path = downloaded_dir / mp3_filename
-        
-        if mp3_path.exists():
-            print(f"MP3 file already exists: {mp3_path}")
-            print("Skipping download - file is already available.")
-            return str(mp3_path)
+    # For playlists, skip the individual file existence check since we want to download all videos
+    if not playlist:
+        # First, get the video title to check if MP3 already exists (only for single videos)
+        print("Checking if file already exists...")
+        try:
+            # Get video info to extract title
+            info_cmd = [
+                str(ytdlp_path),
+                "--get-title",
+                clean_url
+            ]
+            result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
+            video_title = result.stdout.strip()
             
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Could not check if file exists: {e}")
-        print("Proceeding with download...")
+            # Check if MP3 file already exists
+            mp3_filename = f"{video_title}.mp3"
+            mp3_path = downloaded_dir / mp3_filename
+            
+            if mp3_path.exists():
+                print(f"MP3 file already exists: {mp3_path}")
+                print("Skipping download - file is already available.")
+                return str(mp3_path)
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Could not check if file exists: {e}")
+            print("Proceeding with download...")
     
     # Build the command
     cmd = [
@@ -208,27 +215,42 @@ def convert_youtube_to_mp3(youtube_url):
         clean_url
     ]
     
+    # Add playlist-specific options if downloading a playlist
+    if playlist:
+        cmd.extend(["--yes-playlist"])  # Force playlist download
+        print("🎵 Downloading playlist...")
+    else:
+        cmd.extend(["--no-playlist"])  # Don't download playlists
+    
     print(f"Converting {youtube_url} to MP3...")
     print(f"Command: {' '.join(cmd)}")
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print("Conversion completed successfully!")
-        print(result.stdout)
+        if result.stdout:
+            print(result.stdout)
         
-        # Find the created MP3 file
+        # Find the created MP3 file(s)
         mp3_files = list(downloaded_dir.glob("*.mp3"))
         if mp3_files:
-            # Get the most recently created MP3 file
-            latest_mp3 = max(mp3_files, key=lambda x: x.stat().st_mtime)
-            return str(latest_mp3)
+            if playlist:
+                # For playlists, return a list of all created MP3 files
+                # Sort by modification time to get them in download order
+                mp3_files.sort(key=lambda x: x.stat().st_mtime)
+                return [str(mp3_file) for mp3_file in mp3_files]
+            else:
+                # For single videos, return the most recently created MP3 file
+                latest_mp3 = max(mp3_files, key=lambda x: x.stat().st_mtime)
+                return str(latest_mp3)
         else:
             print("Warning: Could not find created MP3 file")
             return None
             
     except subprocess.CalledProcessError as e:
         print(f"Error during conversion: {e}")
-        print(f"Error output: {e.stderr}")
+        if e.stderr:
+            print(f"Error output: {e.stderr}")
         return None
 
 def transcribe_audio(audio_file_path, output_dir="downloaded"):
@@ -360,6 +382,7 @@ def main():
     parser = argparse.ArgumentParser(description="Download YouTube videos, convert to MP3, and generate subtitles")
     parser.add_argument("-url", "--url", required=True, help="YouTube URL to download and convert")
     parser.add_argument("--no-transcribe", action="store_true", help="Skip transcription step")
+    parser.add_argument("--playlist", action="store_true", help="Download entire playlist (if URL is a playlist)")
     
     args = parser.parse_args()
     
@@ -378,32 +401,51 @@ def main():
         sys.exit(1)
     
     print("\n3. Converting YouTube video to MP3...")
-    mp3_file = convert_youtube_to_mp3(args.url)
-    if not mp3_file:
+    if args.playlist:
+        print("🎵 Playlist mode enabled - will download all videos in the playlist")
+    
+    mp3_files = convert_youtube_to_mp3(args.url, playlist=args.playlist)
+    if not mp3_files:
         print("Failed to convert video. Exiting.")
         sys.exit(1)
     
-    print(f"✅ MP3 file created: {mp3_file}")
+    # Handle single file vs playlist
+    if args.playlist and isinstance(mp3_files, list):
+        print(f"✅ {len(mp3_files)} MP3 files created from playlist:")
+        for i, mp3_file in enumerate(mp3_files, 1):
+            print(f"   {i:2d}. {Path(mp3_file).name}")
+    else:
+        print(f"✅ MP3 file created: {Path(mp3_files).name}")
+        mp3_files = [mp3_files]  # Convert to list for consistent processing
     
     # Transcribe the audio if not skipped
-    subtitle_file = None
+    subtitle_files = []
     if not args.no_transcribe:
         print("\n4. Generating subtitles...")
-        try:
-            subtitle_file = transcribe_audio(mp3_file)
-            print(f"✅ Subtitle file created: {subtitle_file}")
-        except Exception as e:
-            print(f"❌ Error during transcription: {e}")
-            import traceback
-            traceback.print_exc()
-            print("Continuing without transcription...")
+        for i, mp3_file in enumerate(mp3_files, 1):
+            try:
+                print(f"\n📝 Transcribing file {i}/{len(mp3_files)}: {Path(mp3_file).name}")
+                subtitle_file = transcribe_audio(mp3_file)
+                if subtitle_file:
+                    subtitle_files.append(subtitle_file)
+                    print(f"✅ Subtitle file created: {Path(subtitle_file).name}")
+            except Exception as e:
+                print(f"❌ Error during transcription of {Path(mp3_file).name}: {e}")
+                import traceback
+                traceback.print_exc()
+                print("Continuing without transcription for this file...")
     else:
         print("\n4. Skipping transcription as requested.")
     
     print("\n🎉 Process completed successfully!")
-    print(f"📁 MP3 file: {mp3_file}")
-    if not args.no_transcribe and subtitle_file:
-        print(f"📄 Subtitle file: {subtitle_file}")
+    if args.playlist:
+        print(f"📁 {len(mp3_files)} MP3 files downloaded from playlist")
+        if not args.no_transcribe and subtitle_files:
+            print(f"📄 {len(subtitle_files)} subtitle files created")
+    else:
+        print(f"📁 MP3 file: {Path(mp3_files[0]).name}")
+        if not args.no_transcribe and subtitle_files:
+            print(f"📄 Subtitle file: {Path(subtitle_files[0]).name}")
 
 if __name__ == "__main__":
     main() 

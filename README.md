@@ -5,6 +5,7 @@ A powerful tool that downloads YouTube videos, converts them to MP3, and generat
 ## 🚀 Features
 
 - **YouTube Video Download**: Downloads videos and converts to MP3 format
+- **Playlist Support**: Download entire playlists with the `--playlist` flag
 - **GPU-Accelerated Transcription**: Uses NVIDIA GPU for fast AI transcription
 - **Chunked Processing**: Handles videos of any length with 30-second chunks
 - **Progress Tracking**: Real-time progress bars for all operations
@@ -84,6 +85,12 @@ python youtube_to_subtitles.py --url "https://www.youtube.com/watch?v=VIDEO_ID"
 # Download video only (skip transcription)
 python youtube_to_subtitles.py --url "https://www.youtube.com/watch?v=VIDEO_ID" --no-transcribe
 
+# Download entire playlist and generate subtitles for all videos
+python youtube_to_subtitles.py --url "https://www.youtube.com/playlist?list=PLAYLIST_ID" --playlist
+
+# Download playlist without transcription
+python youtube_to_subtitles.py --url "https://www.youtube.com/playlist?list=PLAYLIST_ID" --playlist --no-transcribe
+
 # Example with a real video
 python youtube_to_subtitles.py --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
@@ -95,11 +102,22 @@ The script creates files in the `downloaded/` directory:
 - **`Video Title.mp3`** - Audio file extracted from YouTube video
 - **`Video Title.txt`** - Subtitle file with transcribed text
 
-### Example Output
+### Example Output (Single Video)
 ```
 downloaded/
 ├── Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster).mp3
 └── Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster).txt
+```
+
+### Example Output (Playlist)
+```
+downloaded/
+├── Video 1 Title.mp3
+├── Video 1 Title.txt
+├── Video 2 Title.mp3
+├── Video 2 Title.txt
+├── Video 3 Title.mp3
+└── Video 3 Title.txt
 ```
 
 ## 🔧 How It Works
