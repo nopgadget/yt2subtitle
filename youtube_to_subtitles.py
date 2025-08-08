@@ -2,6 +2,7 @@
 """
 YouTube to Subtitles Converter
 Downloads YouTube videos, converts them to MP3, and generates subtitles using AI.
+Also supports direct transcription of local MP3 files.
 """
 
 # =============================================================================
@@ -13,7 +14,7 @@ Downloads YouTube videos, converts them to MP3, and generates subtitles using AI
 # - base: ~1GB VRAM, faster, lower quality
 # - medium: ~3GB VRAM, balanced speed/quality (default)
 # - large: ~10GB VRAM, slower, highest quality
-WHISPER_MODEL = "medium"
+WHISPER_MODEL = "large"
 
 # Model configurations
 MODEL_CONFIGS = {
@@ -253,7 +254,7 @@ def convert_youtube_to_mp3(youtube_url, playlist=False):
             print(f"Error output: {e.stderr}")
         return None
 
-def transcribe_audio(audio_file_path, output_dir="downloaded"):
+def transcribe_audio(audio_file_path, output_dir="downloaded", start_chunk=None, end_chunk=None, start_time=None, end_time=None, include_timestamps=False):
     """
     Transcribe an audio file using Whisper model with chunking for longer videos
     """
@@ -310,11 +311,42 @@ def transcribe_audio(audio_file_path, output_dir="downloaded"):
     num_chunks = max(1, int(len(audio) / (chunk_samples - overlap_samples)))
     print(f"Processing {num_chunks} chunks of {chunk_duration} seconds each")
     
+    # Determine chunk range based on arguments
+    start_chunk_idx = 0
+    end_chunk_idx = num_chunks
+    
+    if start_chunk is not None:
+        start_chunk_idx = max(0, min(start_chunk, num_chunks - 1))
+        print(f"Starting from chunk {start_chunk_idx + 1}")
+    
+    if end_chunk is not None:
+        end_chunk_idx = min(end_chunk, num_chunks)
+        print(f"Ending at chunk {end_chunk_idx}")
+    
+    # Convert time ranges to chunk ranges if specified
+    if start_time is not None:
+        start_sample = int(start_time * sr)
+        start_chunk_idx = max(0, start_sample // (chunk_samples - overlap_samples))
+        print(f"Start time {start_time:.1f}s corresponds to chunk {start_chunk_idx + 1}")
+    
+    if end_time is not None:
+        end_sample = int(end_time * sr)
+        end_chunk_idx = min(num_chunks, end_sample // (chunk_samples - overlap_samples) + 1)
+        print(f"End time {end_time:.1f}s corresponds to chunk {end_chunk_idx}")
+    
+    # Validate chunk range
+    if start_chunk_idx >= end_chunk_idx:
+        print("❌ Invalid chunk range: start chunk must be less than end chunk")
+        return None
+    
+    chunks_to_process = end_chunk_idx - start_chunk_idx
+    print(f"Will process chunks {start_chunk_idx + 1} to {end_chunk_idx} ({chunks_to_process} chunks)")
+    
     # Process chunks
     transcriptions = []
     
-    with tqdm(total=num_chunks, desc="Processing chunks", unit="chunk") as pbar:
-        for i in range(num_chunks):
+    with tqdm(total=chunks_to_process, desc="Processing chunks", unit="chunk") as pbar:
+        for i in range(start_chunk_idx, end_chunk_idx):
             # Calculate chunk boundaries
             start_sample = i * (chunk_samples - overlap_samples)
             end_sample = min(start_sample + chunk_samples, len(audio))
@@ -351,18 +383,46 @@ def transcribe_audio(audio_file_path, output_dir="downloaded"):
             chunk_end_time = end_sample / sr
             print(f"\nChunk {i+1}/{num_chunks} ({chunk_start_time:.1f}s - {chunk_end_time:.1f}s): {chunk_transcription}")
             
-            transcriptions.append(chunk_transcription)
+            # Store transcription with timestamp info if requested
+            if include_timestamps:
+                # Format timestamp as MM:SS
+                start_minutes = int(chunk_start_time // 60)
+                start_seconds = int(chunk_start_time % 60)
+                end_minutes = int(chunk_end_time // 60)
+                end_seconds = int(chunk_end_time % 60)
+                
+                timestamped_transcription = f"[{start_minutes:02d}:{start_seconds:02d}-{end_minutes:02d}:{end_seconds:02d}] [Chunk {i+1}] {chunk_transcription}"
+                transcriptions.append(timestamped_transcription)
+            else:
+                transcriptions.append(chunk_transcription)
             
             elapsed_time = time.time() - start_time
             print(f"⏱️  Chunk {i+1} completed in {elapsed_time:.1f} seconds")
             pbar.update(1)
     
     # Combine all transcriptions
-    full_transcription = " ".join(transcriptions)
+    if include_timestamps:
+        full_transcription = "\n".join(transcriptions)
+    else:
+        full_transcription = " ".join(transcriptions)
     
     # Create output filename (same name as video but .txt extension)
     audio_path = Path(audio_file_path)
     output_filename = audio_path.stem + ".txt"
+    
+    # Add range info to filename if processing a subset
+    if start_chunk_idx > 0 or end_chunk_idx < num_chunks:
+        if start_time is not None and end_time is not None:
+            output_filename = f"{audio_path.stem}_t{start_time:.0f}-{end_time:.0f}s.txt"
+        elif start_chunk is not None and end_chunk is not None:
+            output_filename = f"{audio_path.stem}_c{start_chunk}-{end_chunk}.txt"
+        else:
+            output_filename = f"{audio_path.stem}_range.txt"
+    
+    # Add timestamp indicator to filename if timestamps are included
+    if include_timestamps:
+        output_filename = output_filename.replace(".txt", "_timestamps.txt")
+    
     output_path = Path(output_dir) / output_filename
     
     # Save transcription to file
@@ -380,52 +440,90 @@ def transcribe_audio(audio_file_path, output_dir="downloaded"):
 
 def main():
     parser = argparse.ArgumentParser(description="Download YouTube videos, convert to MP3, and generate subtitles")
-    parser.add_argument("-url", "--url", required=True, help="YouTube URL to download and convert")
+    parser.add_argument("-url", "--url", help="YouTube URL to download and convert")
+    parser.add_argument("-file", "--file", help="Local MP3 file to transcribe")
     parser.add_argument("--no-transcribe", action="store_true", help="Skip transcription step")
     parser.add_argument("--playlist", action="store_true", help="Download entire playlist (if URL is a playlist)")
+    parser.add_argument("--start-chunk", type=int, help="Start processing from this chunk (0-based)")
+    parser.add_argument("--end-chunk", type=int, help="End processing at this chunk (0-based)")
+    parser.add_argument("--start-time", type=float, help="Start transcribing from this time (seconds)")
+    parser.add_argument("--end-time", type=float, help="End transcribing at this time (seconds)")
+    parser.add_argument("--include-timestamps", action="store_true", help="Include timestamps in the output subtitle file")
     
     args = parser.parse_args()
+    
+    # Validate input
+    if not args.url and not args.file:
+        parser.error("Either --url or --file must be specified")
+    if args.url and args.file:
+        parser.error("Cannot specify both --url and --file")
+    if args.playlist and args.file:
+        parser.error("--playlist option is only valid with --url")
     
     print("YouTube to Subtitles Converter")
     print("=" * 40)
     
-    # Check and download required tools
-    print("\n1. Checking for yt-dlp...")
-    if not check_and_download_ytdlp():
-        print("Failed to set up yt-dlp. Exiting.")
-        sys.exit(1)
+    mp3_files = []
     
-    print("\n2. Checking for ffmpeg...")
-    if not check_and_download_ffmpeg():
-        print("Failed to set up ffmpeg. Exiting.")
-        sys.exit(1)
+    if args.url:
+        # YouTube URL processing
+        print("\n1. Checking for yt-dlp...")
+        if not check_and_download_ytdlp():
+            print("Failed to set up yt-dlp. Exiting.")
+            sys.exit(1)
+        
+        print("\n2. Checking for ffmpeg...")
+        if not check_and_download_ffmpeg():
+            print("Failed to set up ffmpeg. Exiting.")
+            sys.exit(1)
+        
+        print("\n3. Converting YouTube video to MP3...")
+        if args.playlist:
+            print("🎵 Playlist mode enabled - will download all videos in the playlist")
+        
+        mp3_files = convert_youtube_to_mp3(args.url, playlist=args.playlist)
+        if not mp3_files:
+            print("Failed to convert video. Exiting.")
+            sys.exit(1)
+        
+        # Handle single file vs playlist
+        if args.playlist and isinstance(mp3_files, list):
+            print(f"✅ {len(mp3_files)} MP3 files created from playlist:")
+            for i, mp3_file in enumerate(mp3_files, 1):
+                print(f"   {i:2d}. {Path(mp3_file).name}")
+        else:
+            print(f"✅ MP3 file created: {Path(mp3_files).name}")
+            mp3_files = [mp3_files]  # Convert to list for consistent processing
     
-    print("\n3. Converting YouTube video to MP3...")
-    if args.playlist:
-        print("🎵 Playlist mode enabled - will download all videos in the playlist")
-    
-    mp3_files = convert_youtube_to_mp3(args.url, playlist=args.playlist)
-    if not mp3_files:
-        print("Failed to convert video. Exiting.")
-        sys.exit(1)
-    
-    # Handle single file vs playlist
-    if args.playlist and isinstance(mp3_files, list):
-        print(f"✅ {len(mp3_files)} MP3 files created from playlist:")
-        for i, mp3_file in enumerate(mp3_files, 1):
-            print(f"   {i:2d}. {Path(mp3_file).name}")
     else:
-        print(f"✅ MP3 file created: {Path(mp3_files).name}")
-        mp3_files = [mp3_files]  # Convert to list for consistent processing
+        # Local MP3 file processing
+        mp3_path = Path(args.file)
+        if not mp3_path.exists():
+            print(f"Error: MP3 file not found: {mp3_path}")
+            sys.exit(1)
+        
+        if not mp3_path.suffix.lower() == '.mp3':
+            print(f"Warning: File {mp3_path} doesn't have .mp3 extension")
+        
+        print(f"\n3. Using local MP3 file: {mp3_path.name}")
+        mp3_files = [str(mp3_path)]
+        print(f"✅ MP3 file found: {mp3_path.name}")
     
     # Transcribe the audio if not skipped
     subtitle_files = []
     if not args.no_transcribe:
         print("\n4. Generating subtitles...")
+        
+        # Show range information if specified
+        if args.start_chunk is not None or args.end_chunk is not None:
+            print(f"📊 Chunk range: {args.start_chunk or 0} to {args.end_chunk or 'end'}")
+        if args.start_time is not None or args.end_time is not None:
+            print(f"⏰ Time range: {args.start_time or 0:.1f}s to {args.end_time or 'end':.1f}s")
+        
         for i, mp3_file in enumerate(mp3_files, 1):
             try:
                 print(f"\n📝 Transcribing file {i}/{len(mp3_files)}: {Path(mp3_file).name}")
-                subtitle_file = transcribe_audio(mp3_file)
+                subtitle_file = transcribe_audio(mp3_file, start_chunk=args.start_chunk, end_chunk=args.end_chunk, start_time=args.start_time, end_time=args.end_time, include_timestamps=args.include_timestamps)
                 if subtitle_file:
                     subtitle_files.append(subtitle_file)
                     print(f"✅ Subtitle file created: {Path(subtitle_file).name}")
@@ -438,7 +536,7 @@ def main():
         print("\n4. Skipping transcription as requested.")
     
     print("\n🎉 Process completed successfully!")
-    if args.playlist:
+    if args.url and args.playlist:
         print(f"📁 {len(mp3_files)} MP3 files downloaded from playlist")
         if not args.no_transcribe and subtitle_files:
             print(f"📄 {len(subtitle_files)} subtitle files created")
